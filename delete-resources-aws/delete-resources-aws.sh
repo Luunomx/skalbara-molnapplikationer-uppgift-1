@@ -4,15 +4,7 @@ set -euo pipefail
 STACK_NAME="wordpress-stack"
 REGION="eu-west-1"
 
-echo "⚠️  Detta kommer ta bort hela stacken: $STACK_NAME i region $REGION"
-read -p "Är du säker? (yes/no): " CONFIRM
-
-if [[ "$CONFIRM" != "yes" ]]; then
-  echo "❌ Avbrutet"
-  exit 1
-fi
-
-echo "🗑️  Tar bort stack $STACK_NAME ..."
+echo "🗑️  Tar bort stack $STACK_NAME i region $REGION ..."
 aws cloudformation delete-stack \
   --stack-name $STACK_NAME \
   --region $REGION
