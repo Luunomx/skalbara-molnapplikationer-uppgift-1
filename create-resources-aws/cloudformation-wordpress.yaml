@@ -201,53 +201,59 @@ Resources:
           TargetGroupArn: !Ref ALBTargetGroup
 
   # ---------------- Launch Template + ASG ----------------
-  LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateData:
-        ImageId: ami-04fc3aeb3378acab2
-        InstanceType: !Ref InstanceType
-        KeyName: !Ref KeyName
-        SecurityGroupIds: [!Ref EC2SecurityGroup]
-        UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            yum update -y
-            yum install -y amazon-efs-utils httpd php php-mysqlnd mariadb
+    LaunchTemplate:
+      Type: AWS::EC2::LaunchTemplate
+      Properties:
+        LaunchTemplateData:
+          ImageId: ami-04fc3aeb3378acab2
+          InstanceType: !Ref InstanceType
+          KeyName: !Ref KeyName
+          SecurityGroupIds: [!Ref EC2SecurityGroup]
+          UserData:
+            Fn::Base64: !Sub |
+              #!/bin/bash
+              yum update -y
+              yum install -y amazon-efs-utils httpd php php-mysqlnd mariadb
 
-            systemctl enable httpd
-            systemctl start httpd
+              systemctl enable httpd
+              systemctl start httpd
 
-            # Mounta EFS
-            mkdir -p /var/www/html
-            echo "${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html efs defaults,_netdev 0 0" >> /etc/fstab
-            mount -a
+              # Mounta EFS
+              mkdir -p /var/www/html
+              echo "${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html efs defaults,_netdev,nofail 0 0" >> /etc/fstab
+              mount -a
 
-            cd /var/www/html
-            curl -O https://wordpress.org/latest.tar.gz
-            tar -xzf latest.tar.gz --strip-components=1
-            rm latest.tar.gz
+              cd /var/www/html
+              curl -O https://wordpress.org/latest.tar.gz
+              tar -xzf latest.tar.gz --strip-components=1
+              rm latest.tar.gz
 
-            cp wp-config-sample.php wp-config.php
-            sed -i "s/database_name_here/${DBName}/" wp-config.php
-            sed -i "s/username_here/${DBUser}/" wp-config.php
-            sed -i "s/password_here/${DBPassword}/" wp-config.php
-            sed -i "s/localhost/${DBInstance.Endpoint.Address}/" wp-config.php
+              cp wp-config-sample.php wp-config.php
+              sed -i "s/database_name_here/${DBName}/" wp-config.php
+              sed -i "s/username_here/${DBUser}/" wp-config.php
+              sed -i "s/password_here/${DBPassword}/" wp-config.php
+              sed -i "s/localhost/${DBInstance.Endpoint.Address}/" wp-config.php
 
-            # Install WP-CLI
-            curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-            chmod +x wp-cli.phar
-            mv wp-cli.phar /usr/local/bin/wp
+              # Vänta på att RDS ska vara redo
+              until nc -z ${DBInstance.Endpoint.Address} 3306; do
+                echo "⏳ Waiting for RDS to be ready..."
+                sleep 10
+              done
 
-            # Install WordPress
-            wp core install \
-              --url="http://${ALB.DNSName}" \
-              --title="Luunoms site" \
-              --admin_user="admin" \
-              --admin_password="Omega181" \
-              --admin_email="hugohemlin@hotmail.com" \
-              --skip-email \
-              --path=/var/www/html
+              # Install WP-CLI
+              curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+              chmod +x wp-cli.phar
+              mv wp-cli.phar /usr/local/bin/wp
+
+              # Install WordPress
+              wp core install \
+                --url="http://${ALB.DNSName}" \
+                --title="Luunoms site" \
+                --admin_user="admin" \
+                --admin_password="Omega181" \
+                --admin_email="hugohemlin@hotmail.com" \
+                --skip-email \
+                --path=/var/www/html
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
