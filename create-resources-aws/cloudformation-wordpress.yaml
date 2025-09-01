@@ -4,9 +4,26 @@ Description: >
   RDS MariaDB, Security Groups. EC2 instances bootstrapped with WordPress.
 
 Parameters:
+  AdminUser:
+    Type: String
+    Default: admin
+    Description: WordPress admin username
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Default: Omega181
+    Description: WordPress admin password
+  AdminEmail:
+    Type: String
+    Default: hugohemlin@hotmail.com
+    Description: WordPress admin email
+  SiteTitle:
+    Type: String
+    Default: "Luunoms site"
+    Description: WordPress site title
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
-    Default: alb-ec2-key
+    Default: new-ec2-key
     Description: EC2 KeyPair
   AllowedSSH:
     Type: String
@@ -212,48 +229,59 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            yum update -y
-            yum install -y amazon-efs-utils httpd php php-mysqlnd mariadb
+            exec > >(tee /var/log/userdata.log|logger -t userdata ) 2>&1
 
+            echo "==== Updating system ===="
+            dnf update -y
+
+            echo "==== Installing packages ===="
+            dnf install -y amazon-efs-utils httpd php php-mysqlnd mariadb105 tar nmap-ncat
+
+            echo "==== Enabling and starting Apache ===="
             systemctl enable httpd
             systemctl start httpd
 
-            # Mount EFS
+            echo "==== Mounting EFS ===="
             mkdir -p /var/www/html
             echo "${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html efs defaults,_netdev,nofail 0 0" >> /etc/fstab
             mount -a
 
+            echo "==== Downloading WordPress ===="
             cd /var/www/html
             curl -O https://wordpress.org/latest.tar.gz
             tar -xzf latest.tar.gz --strip-components=1
             rm latest.tar.gz
 
+            echo "==== Configuring WordPress ===="
             cp wp-config-sample.php wp-config.php
             sed -i "s/database_name_here/${DBName}/" wp-config.php
             sed -i "s/username_here/${DBUser}/" wp-config.php
             sed -i "s/password_here/${DBPassword}/" wp-config.php
             sed -i "s/localhost/${DBInstance.Endpoint.Address}/" wp-config.php
 
-            # Wait for RDS
+            echo "==== Waiting for RDS to be ready ===="
             until nc -z ${DBInstance.Endpoint.Address} 3306; do
-              echo "Waiting for RDS to be ready..."
+              echo "Waiting for RDS..."
               sleep 10
             done
 
-            # Install WP-CLI
+            echo "==== Installing WP-CLI ===="
             curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
             chmod +x wp-cli.phar
             mv wp-cli.phar /usr/local/bin/wp
 
-            # Install WordPress
-            wp core install \
+            echo "==== Running WP install ===="
+            sudo -u apache wp core install \
               --url="http://${ALB.DNSName}" \
-              --title="Luunoms site" \
-              --admin_user="admin" \
-              --admin_password="Omega181" \
-              --admin_email="hugohemlin@hotmail.com" \
+              --title="${SiteTitle}" \
+              --admin_user="${AdminUser}" \
+              --admin_password="${AdminPassword}" \
+              --admin_email="${AdminEmail}" \
               --skip-email \
-              --path=/var/www/html
+              --path=/var/www/html || true
+
+            echo "==== Health check marker ===="
+            echo "OK" > /var/www/html/healthcheck.txt
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup

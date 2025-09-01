@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-STACK_NAME="wordpress-stack"
+STACK_NAME="luunom-wordpress"
 REGION="eu-west-1"
 
 echo "🗑️  Tar bort stack $STACK_NAME i region $REGION ..."
