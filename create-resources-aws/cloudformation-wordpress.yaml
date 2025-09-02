@@ -85,6 +85,41 @@ Resources:
       CidrBlock: 10.0.2.0/24
       MapPublicIpOnLaunch: true
 
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: eu-west-1c
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: true
+
+  SubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetC
+      RouteTableId: !Ref PublicRouteTable
+
+  MountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroups: [!Ref EC2SecurityGroup]
+
+  MountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PublicSubnetB
+      SecurityGroups: [!Ref EC2SecurityGroup]
+
+  MountTargetC:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PublicSubnetC
+      SecurityGroups: [!Ref EC2SecurityGroup]
+
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -136,6 +171,17 @@ Resources:
           FromPort: 22
           ToPort: 22
           CidrIp: !Ref AllowedSSH
+  
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow NFS from EC2
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
 
   RDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -161,21 +207,28 @@ Resources:
     Properties:
       FileSystemId: !Ref FileSystem
       SubnetId: !Ref PublicSubnetA
-      SecurityGroups: [!Ref EC2SecurityGroup]
+      SecurityGroups: [!Ref EFSSecurityGroup]
 
   MountTargetB:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref FileSystem
       SubnetId: !Ref PublicSubnetB
-      SecurityGroups: [!Ref EC2SecurityGroup]
+      SecurityGroups: [!Ref EFSSecurityGroup]
+  
+  MountTargetC:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PublicSubnetC
+      SecurityGroups: [!Ref EFSSecurityGroup]
 
   # ---------------- RDS (MariaDB) ----------------
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: WP DB subnets
-      SubnetIds: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SubnetIds: [!Ref PublicSubnetA, !Ref PublicSubnetB, !Ref PublicSubnetC]
 
   DBInstance:
     Type: AWS::RDS::DBInstance
@@ -195,7 +248,7 @@ Resources:
   ALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB, !Ref PublicSubnetC]
       SecurityGroups: [!Ref ALBSecurityGroup]
 
   ALBTargetGroup:
@@ -235,16 +288,32 @@ Resources:
             dnf update -y
 
             echo "==== Installing packages ===="
-            dnf install -y amazon-efs-utils httpd php php-mysqlnd mariadb105 tar nmap-ncat
+            dnf install -y amazon-efs-utils httpd php php-mysqlnd mariadb105 tar nmap-ncat stress
 
             echo "==== Enabling and starting Apache ===="
             systemctl enable httpd
             systemctl start httpd
 
-            echo "==== Mounting EFS ===="
+            echo "==== Setting up EFS mount via systemd ===="
             mkdir -p /var/www/html
-            echo "${FileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html efs defaults,_netdev,nofail 0 0" >> /etc/fstab
-            mount -a
+            cat <<EOF > /etc/systemd/system/efs-mount.service
+            [Unit]
+            Description=Mount EFS
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=oneshot
+            ExecStart=/bin/mount -t efs -o tls ${FileSystem}:/ /var/www/html
+            RemainAfterExit=true
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl enable efs-mount.service
+            systemctl start efs-mount.service
 
             echo "==== Downloading WordPress ===="
             cd /var/www/html
@@ -283,10 +352,11 @@ Resources:
             echo "==== Health check marker ===="
             echo "OK" > /var/www/html/healthcheck.txt
 
+
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      VPCZoneIdentifier: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      VPCZoneIdentifier: [!Ref PublicSubnetA, !Ref PublicSubnetB, !Ref PublicSubnetC]
       MinSize: 2
       MaxSize: 4
       DesiredCapacity: 2
@@ -294,6 +364,56 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
+
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: 1
+      Cooldown: 300
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: -1
+      Cooldown: 300
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Scale up if CPU > 60% for 2 minutes"
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 60
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref ScaleUpPolicy
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Scale down if CPU < 30% for 5 minutes"
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 30
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref ScaleDownPolicy
 
 Outputs:
   ALBDNSName:
