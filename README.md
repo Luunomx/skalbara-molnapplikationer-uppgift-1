@@ -1,24 +1,36 @@
 # WordPress Infrastructure on AWS
 
-This project provisions a **scalable and robust WordPress environment** on AWS using **CloudFormation** and **Bash scripts**.  
-The environment is based on the following components:
+This project provisions a **scalable and robust WordPress environment** on AWS using **CloudFormation** and **Bash scripts** (IaC).  
+The solution is designed for **high availability** and **one-click deployment** of a fully configured WordPress site.
 
-- **VPC** with 2 Availability Zones  
-- **Application Load Balancer (ALB)**  
-- **Auto Scaling Group (ASG)** with EC2 instances  
-- **Amazon Elastic File System (EFS)** for shared WordPress files  
-- **Amazon RDS (MariaDB)** for the WordPress database  
-- **Security Groups** for controlled access  
-- **User Data bootstrap** that installs and configures WordPress automatically  
+---
+
+## 🏗️ Architecture
+
+The infrastructure consists of:
+
+- **VPC** with 3 Availability Zones (eu-west-1a, eu-west-1b, eu-west-1c).  
+- **Application Load Balancer (ALB)** with Listener + Target Group, distributing traffic across EC2 instances.  
+- **Auto Scaling Group (ASG)** that automatically creates EC2 instances across 3 AZs using a Launch Template defined in CloudFormation.  
+- **EC2 instances** running Apache + PHP + WordPress, bootstrapped with **UserData**.  
+- **Amazon Elastic File System (EFS)** mounted at `/var/www/html` on all EC2s, with one Mount Target per AZ (A, B, C).  
+- **Amazon RDS (MariaDB)** as the centralized WordPress database.  
+- **Security Groups**:  
+  - ALB SG → allow HTTP(80) from internet.  
+  - EC2 SG → allow HTTP(80) from ALB, SSH(22) from allowed IP.  
+  - EFS SG → allow NFS(2049) from EC2 SG.  
+  - RDS SG → allow MySQL/MariaDB(3306) from EC2 SG.  
+- **Parameters in Bash script** to automatically configure WordPress admin user, password, database and site title at provision time.  
+  → Result: WordPress is fully ready on first boot, no manual setup required.  
 
 ---
 
 ## 🚀 How to Deploy
 
 ### 1. Prerequisites
-- An AWS account with IAM permissions for CloudFormation, EC2, EFS, RDS, and ALB.  
+- AWS account with permissions for CloudFormation, EC2, EFS, RDS, ALB.  
 - AWS CLI installed and configured (`aws configure`).  
-- A KeyPair created in AWS EC2 (this project uses `alb-ec2-key`).  
+- SSH KeyPair created in AWS EC2 (this project uses `alb-ec2-key`).  
 
 ### 2. Create the Infrastructure
 Run the following script to **create or update** the CloudFormation stack:
@@ -28,13 +40,13 @@ Run the following script to **create or update** the CloudFormation stack:
 ```
 
 This will:
-- Create the VPC, ALB, ASG, EFS, and RDS resources.
-- Bootstrap EC2 instances with WordPress.
+- Deploy the VPC, ALB, ASG, EFS, and RDS resources.
+- Configure EC2 instances with WordPress automatically using UserData.
 - Output the **ALB DNS Name**, which you can use to access your WordPress site.
 
 ### 3. Access WordPress
-Once the stack is created, copy the ALB DNS Name from the script output and open it in your browser.  
-You should see your WordPress site automatically installed and configured with:
+After deployment, open the ALB DNS Name in your browser.  
+You will get a **ready-to-use WordPress site** with:
 
 - **Admin user:** `admin`  
 - **Password:** `Omega181`  
@@ -45,28 +57,30 @@ You should see your WordPress site automatically installed and configured with:
 
 ## 🗑️ How to Delete
 
-To remove all resources created by the stack:
+To remove all resources:
 
 ```bash
 ./delete-resources-aws.sh
 ```
 
 This will:
-- Delete the CloudFormation stack (`wordpress-stack`).
-- Clean up **all AWS resources** created by the template (VPC, ALB, ASG, EC2, EFS, RDS).
+- Delete the CloudFormation stack (`luunom-wordpress`).
+- Clean up **all AWS resources** created (VPC, ALB, ASG, EC2, EFS, RDS).
 
 ---
 
 ## 📦 Files
 
-- **`cloudformation-wordpress.yaml`** → CloudFormation template describing the full WordPress infrastructure.  
-- **`create-resources-aws.sh`** → Bash script to create or update the CloudFormation stack.  
-- **`delete-resources-aws.sh`** → Bash script to delete the CloudFormation stack and all associated resources.  
+- **`cloudformation-wordpress.yaml`** → CloudFormation template (full infra as code).  
+- **`create-resources-aws.sh`** → Bash script to create/update stack with parameters.  
+- **`delete-resources-aws.sh`** → Bash script to delete stack and resources.  
 
 ---
 
 ## 📝 Notes
 
-- Default region is set to **eu-west-1 (Ireland)**. Update the region in the scripts if needed.  
-- The stack name is `wordpress-stack` (can be changed inside the scripts).  
-- SSH is allowed from all IPs by default (`0.0.0.0/0`). For better security, restrict it to your own IP in the script.  
+- Default region: **eu-west-1 (Ireland)**. Update in scripts if needed.  
+- SSH is restricted via parameter `AllowedSSH` (set to your IP).  
+- **EFS mount** uses `amazon-efs-utils` with TLS → logs at `/var/log/amazon/efs/mount.log`.  
+- Solution follows **AWS best practice**: one EFS mount target per AZ.  
+- CloudFormation UserData + Bash parameters ensure **idempotent setup** (safe to rerun).  
